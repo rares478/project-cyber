@@ -404,8 +404,6 @@ Ensure these files sit **next to** `App.exe`:
 | `demo.ps1 -Mode secure`             | inprocess   | `C:\Windows\System32\version.dll` | `OK (App.exe)`          |
 
 
-Use **Process Explorer** or the log files for screenshots in your report.
-
 ---
 
 ## Implementation details
