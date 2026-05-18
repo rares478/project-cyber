@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "targets": ["App.exe"],
+  "mode": "inprocess",
+  "payload": "BadDll.dll",
+  "injector": "Injector.exe"
+}

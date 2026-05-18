@@ -1,0 +1,5 @@
+.idea
+/build
+/third_party
+/deploy
+/cmake-build-debug
