@@ -8,9 +8,11 @@ namespace loader {
 
 struct Config {
     bool enabled = true;
+    bool simulate_edr = false;
     std::vector<std::wstring> targets;
     std::wstring mode = L"inprocess";  // inprocess | remote
     std::wstring payload = L"BadDll.dll";
+    std::wstring edr_sim = L"EdrSim.dll";
     std::wstring injector = L"Injector.exe";
 };
 

@@ -1,6 +1,6 @@
 # Quick demo helper — all logs print to this console automatically.
 param(
-    [ValidateSet("insecure-inprocess", "insecure-remote", "secure")]
+    [ValidateSet("insecure-inprocess", "insecure-remote", "insecure-unhook", "secure")]
     [string]$Mode = "insecure-inprocess"
 )
 
@@ -19,16 +19,25 @@ $appArgs = @("--demo")
 switch ($Mode) {
     "insecure-inprocess" {
         $config.mode = "inprocess"
+        $config.simulate_edr = $false
         $appArgs = @("--insecure", "--demo")
         $expected = "INJECTED"
     }
     "insecure-remote" {
         $config.mode = "remote"
+        $config.simulate_edr = $false
         $appArgs = @("--insecure", "--demo")
         $expected = "INJECTED"
     }
+    "insecure-unhook" {
+        $config.mode = "inprocess"
+        $config.simulate_edr = $true
+        $appArgs = @("--insecure", "--demo")
+        $expected = "INJECTED (EDR sim + syscall unhook; watchdog re-hooks ~1.5s)"
+    }
     "secure" {
         $config.mode = "inprocess"
+        $config.simulate_edr = $false
         $appArgs = @("--secure", "--demo")
         $expected = "OK (App.exe)"
     }
@@ -62,6 +71,7 @@ if ($exitCode -ne 0) {
 $logFiles = @(
     @{ Name = "App";       File = "app.log" },
     @{ Name = "version.dll"; File = "version.log" },
+    @{ Name = "EdrSim";    File = "edr_sim.log" },
     @{ Name = "BadDll";    File = "bad_dll.log" },
     @{ Name = "Injector";  File = "injector.log" }
 )

@@ -1,5 +1,7 @@
 {
   "enabled": true,
+  "simulate_edr": false,
+  "edr_sim": "EdrSim.dll",
   "targets": ["App.exe"],
   "mode": "inprocess",
   "payload": "BadDll.dll",

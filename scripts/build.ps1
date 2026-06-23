@@ -25,4 +25,5 @@ Write-Host ""
 Write-Host "Run a demo (logs print below automatically):" -ForegroundColor Cyan
 Write-Host "  .\scripts\demo.ps1 -Mode insecure-inprocess"
 Write-Host "  .\scripts\demo.ps1 -Mode insecure-remote"
+Write-Host "  .\scripts\demo.ps1 -Mode insecure-unhook"
 Write-Host "  .\scripts\demo.ps1 -Mode secure"

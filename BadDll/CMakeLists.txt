@@ -9,9 +9,12 @@ add_compile_definitions(_WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
 add_library(BadDll SHARED
     src/dllmain.cpp
     src/hooks.cpp
+    src/unhook.cpp
 )
 
-target_link_libraries(BadDll PRIVATE detours lab_log kernel32)
+target_include_directories(BadDll PRIVATE include)
+
+target_link_libraries(BadDll PRIVATE detours lab_log lab_syscalls kernel32)
 
 set_target_properties(BadDll PROPERTIES
     OUTPUT_NAME "BadDll"

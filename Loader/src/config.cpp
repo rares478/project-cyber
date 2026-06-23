@@ -118,6 +118,7 @@ bool load_config(const std::wstring& config_path, Config& out) {
     }
 
     out.enabled = extract_json_bool(json, "enabled", true);
+    out.simulate_edr = extract_json_bool(json, "simulate_edr", false);
 
     const std::string mode = extract_json_string(json, "mode");
     if (!mode.empty()) {
@@ -127,6 +128,11 @@ bool load_config(const std::wstring& config_path, Config& out) {
     const std::string payload = extract_json_string(json, "payload");
     if (!payload.empty()) {
         out.payload = utf8_to_wide(payload);
+    }
+
+    const std::string edr_sim = extract_json_string(json, "edr_sim");
+    if (!edr_sim.empty()) {
+        out.edr_sim = utf8_to_wide(edr_sim);
     }
 
     const std::string injector = extract_json_string(json, "injector");

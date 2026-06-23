@@ -16,6 +16,7 @@ include(cmake/BuildDetours.cmake)
 
 add_subdirectory(shared)
 
+add_subdirectory(EdrSim)
 add_subdirectory(BadDll)
 add_subdirectory(Loader)
 add_subdirectory(App)
@@ -28,8 +29,9 @@ add_custom_target(deploy ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:App>" "${DEPLOY_DIR}/"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:version>" "${DEPLOY_DIR}/"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:BadDll>" "${DEPLOY_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:EdrSim>" "${DEPLOY_DIR}/"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:Injector>" "${DEPLOY_DIR}/"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/Loader/res/Loader.config.json" "${DEPLOY_DIR}/"
-    DEPENDS App version BadDll Injector
+    DEPENDS App version BadDll EdrSim Injector
     COMMENT "Copying lab binaries to deploy/"
 )

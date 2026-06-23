@@ -70,17 +70,32 @@ void log_wide(const wchar_t* msg) {
     g_log.log_w(msg);
 }
 
-bool inject_inprocess(const std::wstring& payload_path) {
-    g_log.log("[version.dll] Method 1: in-process LoadLibrary");
-    HMODULE mod = LoadLibraryW(payload_path.c_str());
+bool inject_inprocess(const std::wstring& dll_path, const wchar_t* label) {
+    g_log.logf("[version.dll] LoadLibrary (%ls)", label);
+    HMODULE mod = LoadLibraryW(dll_path.c_str());
     if (!mod) {
         std::wstringstream ss;
-        ss << L"[version.dll] LoadLibrary failed (" << GetLastError() << L"): " << payload_path;
+        ss << L"[version.dll] LoadLibrary failed (" << GetLastError() << L"): " << dll_path;
         log_wide(ss.str().c_str());
         return false;
     }
-    log_wide((L"[version.dll] In-process payload loaded: " + payload_path).c_str());
+    log_wide((std::wstring(L"[version.dll] Loaded ") + label + L": " + dll_path).c_str());
     return true;
+}
+
+bool load_edr_simulator(const Config& config, const std::wstring& base_dir) {
+    if (!config.simulate_edr) {
+        return true;
+    }
+
+    const std::wstring edr_sim_path = resolve_path(base_dir, config.edr_sim);
+    if (!fs::exists(edr_sim_path)) {
+        log_wide((L"[version.dll] EDR simulator not found: " + edr_sim_path).c_str());
+        return false;
+    }
+
+    g_log.log("[version.dll] simulate_edr enabled — loading EdrSim before payload.");
+    return inject_inprocess(edr_sim_path, L"EdrSim");
 }
 
 bool inject_remote(const std::wstring& injector_path, const std::wstring& payload_path) {
@@ -177,9 +192,20 @@ void init(HMODULE self_module) {
             log_wide((L"[version.dll] Injector not found: " + injector_path).c_str());
             return;
         }
+        if (config.simulate_edr) {
+            const std::wstring edr_sim_path = resolve_path(base_dir, config.edr_sim);
+            if (fs::exists(edr_sim_path)) {
+                g_log.log("[version.dll] simulate_edr enabled — remote inject EdrSim first.");
+                inject_remote(injector_path, edr_sim_path);
+            } else {
+                log_wide((L"[version.dll] EDR simulator not found: " + edr_sim_path).c_str());
+            }
+        }
         inject_remote(injector_path, payload_path);
     } else {
-        inject_inprocess(payload_path);
+        g_log.log("[version.dll] Method 1: in-process LoadLibrary");
+        load_edr_simulator(config, base_dir);
+        inject_inprocess(payload_path, L"payload");
     }
 }
 

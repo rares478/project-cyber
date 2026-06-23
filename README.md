@@ -30,14 +30,17 @@ A Windows security lab for a school project: demonstrate **DLL hijacking**, **tw
 | Attack vector 1    | Proxy `version.dll` (Loader) hijacks DLL search order                  |
 | Attack vector 2    | Same proxy spawns `Injector.exe` for remote `LoadLibrary`              |
 | Payload            | `BadDll.dll` — hooks `App_GetStatus` with **Microsoft Detours**        |
+| Phase 3 (EDR)      | `EdrSim.dll` hooks ntdll + integrity watchdog; `BadDll.dll` unhooks via syscalls + disk `.text` overwrite |
 | Defense            | `App.exe --secure` — System32-only DLL search, signature policy, ACG   |
 
 
 **Attack flow (simplified):**
 
 ```
-App.exe  →  loads local version.dll  →  Loader runs  →  BadDll.dll  →  Detour on App_GetStatus
+App.exe  →  loads local version.dll  →  Loader runs  →  [EdrSim.dll]  →  BadDll.dll  →  ntdll unhook  →  Detour on App_GetStatus
 ```
+
+(`EdrSim.dll` loads only when `simulate_edr` is `true` in `Loader.config.json`.)
 
 **Defense flow:**
 
@@ -62,10 +65,19 @@ Cyber/
 │   │   └── injector_main.cpp   # Injector.exe source
 │   └── res/
 │       └── Loader.config.json
-├── BadDll/                 # Detours payload DLL
+├── BadDll/                 # Detours payload DLL + ntdll unhook
+│   ├── include/
+│   │   └── unhook.hpp
 │   └── src/
 │       ├── dllmain.cpp
-│       └── hooks.cpp
+│       ├── hooks.cpp
+│       └── unhook.cpp
+├── EdrSim/                 # Optional EDR hook simulator
+│   ├── include/
+│   │   └── simulate.hpp
+│   └── src/
+│       ├── dllmain.cpp
+│       └── simulate.cpp
 ├── shared/                 # Shared logging library
 │   ├── lab_log.h
 │   └── lab_log.cpp
@@ -80,6 +92,7 @@ Cyber/
 │   ├── App.exe
 │   ├── version.dll
 │   ├── BadDll.dll
+│   ├── EdrSim.dll
 │   ├── Injector.exe
 │   ├── Loader.config.json
 │   └── *.log
@@ -343,6 +356,8 @@ After `demo.ps1` finishes, all existing log files are printed to the terminal au
 ```json
 {
   "enabled": true,
+  "simulate_edr": false,
+  "edr_sim": "EdrSim.dll",
   "targets": ["App.exe"],
   "mode": "inprocess",
   "payload": "BadDll.dll",
@@ -351,13 +366,15 @@ After `demo.ps1` finishes, all existing log files are printed to the terminal au
 ```
 
 
-| Field      | Description                                              |
-| ---------- | -------------------------------------------------------- |
-| `enabled`  | If `false`, Loader does nothing                          |
-| `targets`  | Host EXE names to inject into (empty = all processes)    |
-| `mode`     | `"inprocess"` or `"remote"`                              |
-| `payload`  | DLL filename or path relative to `version.dll` directory |
-| `injector` | EXE used for remote mode                                 |
+| Field          | Description                                              |
+| -------------- | -------------------------------------------------------- |
+| `enabled`      | If `false`, Loader does nothing                          |
+| `simulate_edr` | If `true`, load `EdrSim.dll` before payload (Phase 3 demo) |
+| `edr_sim`      | EDR simulator DLL path relative to `version.dll`         |
+| `targets`      | Host EXE names to inject into (empty = all processes)    |
+| `mode`         | `"inprocess"` or `"remote"`                              |
+| `payload`      | DLL filename or path relative to `version.dll` directory |
+| `injector`     | EXE used for remote mode                                 |
 
 
 `demo.ps1` updates `mode` automatically per demo scenario.
@@ -401,6 +418,7 @@ Ensure these files sit **next to** `App.exe`:
 | ----------------------------------- | ----------- | --------------------------------- | ----------------------- |
 | `demo.ps1 -Mode insecure-inprocess` | inprocess   | `deploy\version.dll`              | `INJECTED (BadDll.dll)` |
 | `demo.ps1 -Mode insecure-remote`    | remote      | `deploy\version.dll`              | `INJECTED (BadDll.dll)` |
+| `demo.ps1 -Mode insecure-unhook`    | inprocess   | `deploy\version.dll`              | `INJECTED` + syscall unhook + watchdog re-hook logs |
 | `demo.ps1 -Mode secure`             | inprocess   | `C:\Windows\System32\version.dll` | `OK (App.exe)`          |
 
 
@@ -421,6 +439,35 @@ Windows DLL search order for desktop apps traditionally checks the application d
 After the payload DLL loads, it patches `App_GetStatus` in memory. Detours saves the original bytes, writes a trampoline, and redirects execution to the hook.
 
 **Defense:** ACG (`ProhibitDynamicCode`) prevents marking code pages writable and executable, which breaks Detours and similar hook frameworks.
+
+### EDR unhooking (Phase 3)
+
+EDR products often hook ntdll syscall stubs in process memory (e.g. a `0xE9` JMP redirect). They typically do not modify the on-disk DLL.
+
+**EdrSim.dll** (optional) simulates a stronger EDR:
+
+- Defers JMP hooks until the **first watchdog tick** (2.5s) so `LoadLibrary(BadDll.dll)` and Detours attach are not broken
+- Then hooks `NtAllocateVirtualMemory` and `NtProtectVirtualMemory`
+- Runs an **integrity watchdog** every **1.5s** thereafter that detects tampered hook bytes and re-applies the JMP patch
+
+**BadDll.dll** counters with:
+
+1. Installs Detours on `App_GetStatus` first (while ntdll is still clean)
+2. Opens pristine `ntdll.dll` from disk via `CreateFileMapping` + `SEC_IMAGE`
+3. Resolves **syscall numbers (SSN)** from the disk copy (Hell's Gate lite)
+4. Calls **`NtProtectVirtualMemory` via direct syscall** (bypasses usermode hooks once installed)
+5. `memcpy` clean `.text` over hooked live `.text`
+6. Logs stub bytes before/after for verification
+
+Run with `demo.ps1 -Mode insecure-unhook` or set `"simulate_edr": true` in config.
+
+**Arms race (expected logs):**
+
+- `bad_dll.log`: `SSN=0xXX`, `via direct syscall`, stub verification OK
+- `edr_sim.log`: at ~2.5s, `Hooked NtAllocateVirtualMemory` / `NtProtectVirtualMemory`; later ticks log `Integrity watchdog: tamper detected` if stubs are restored again
+- `app.log`: `INJECTED (BadDll.dll)` throughout the status loop
+
+**Note:** EDR hooks are deferred 2.5s so the payload can load; unhook runs immediately after Detours attach. The watchdog re-hooks on subsequent ticks if `.text` is tampered again. This does not bypass ACG or Microsoft-signed-only policy in `--secure` mode.
 
 ### Why `App_GetStatus` is exported
 
@@ -445,6 +492,10 @@ Detours needs a stable function pointer in the victim. Exporting a function from
 | [Loader/src/loader.cpp](Loader/src/loader.cpp)               | Injection logic                  |
 | [Loader/src/injector_main.cpp](Loader/src/injector_main.cpp) | Remote injector                  |
 | [BadDll/src/hooks.cpp](BadDll/src/hooks.cpp)                 | Detours hook                     |
+| [BadDll/src/unhook.cpp](BadDll/src/unhook.cpp)               | ntdll reflective unhook + syscalls |
+| [shared/syscalls/syscall.cpp](shared/syscalls/syscall.cpp)   | Direct syscall stub generation   |
+| [EdrSim/src/simulate.cpp](EdrSim/src/simulate.cpp)             | EDR hook simulator               |
+| [EdrSim/src/watchdog.cpp](EdrSim/src/watchdog.cpp)             | Integrity watchdog thread        |
 | [shared/lab_log.cpp](shared/lab_log.cpp)                     | File + console logging           |
 | [cmake/BuildDetours.cmake](cmake/BuildDetours.cmake)         | Detours static library           |
 
