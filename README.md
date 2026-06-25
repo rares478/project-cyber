@@ -1,104 +1,84 @@
-# DLL Injection Lab — Project Documentation
+# CyberDllLab — Windows DLL Injection & EDR Evasion
 
-A Windows security lab for a school project: demonstrate **DLL hijacking**, **two injection techniques**, **Microsoft Detours hooking**, and **process mitigations** that defend against them. The victim application is a custom `App.exe`.
+A self-contained Windows stack that chains **DLL hijacking**, **remote or in-process injection**, **user-mode API hooking (Detours)**, **simulated EDR monitoring**, and **ntdll unhooking via direct syscalls** — with matching process mitigations in secure mode. The victim process is a custom `App.exe`.
 
 ---
 
 ## Table of contents
 
 1. [Overview](#overview)
-2. [Project structure](#project-structure)
-3. [Architecture](#architecture)
-4. [Components](#components)
-5. [Injection methods](#injection-methods)
-6. [Defense (secure mode)](#defense-secure-mode)
-7. [Microsoft Detours payload](#microsoft-detours-payload)
-8. [Logging](#logging)
-9. [Configuration](#configuration)
-10. [Build and run](#build-and-run)
-11. [Demo matrix](#demo-matrix)
-12. [Implementation details](#implementation-details)
+2. [Attack chain](#attack-chain)
+3. [Project structure](#project-structure)
+4. [Architecture](#architecture)
+5. [Components](#components)
+6. [Injection methods](#injection-methods)
+7. [EDR simulation & unhooking](#edr-simulation--unhooking)
+8. [Defense (secure mode)](#defense-secure-mode)
+9. [Logging](#logging)
+10. [Configuration](#configuration)
+11. [Build and run](#build-and-run)
+12. [Scenarios](#scenarios)
+13. [Implementation notes](#implementation-notes)
 
 ---
 
 ## Overview
 
+| Layer | Binary | Role |
+| ----- | ------ | ---- |
+| Victim | `App.exe` | Loads `version.dll`, exports `App_GetStatus()` for hooking |
+| Loader | `version.dll` | Proxy DLL hijack; dispatches injection per config |
+| Injector | `Injector.exe` | Remote `CreateRemoteThread` + `LoadLibraryW` (optional mode) |
+| EDR sim | `EdrSim.dll` | Hooks ntdll stubs; integrity watchdog re-applies patches |
+| Payload | `BadDll.dll` | Detours hook + reflective ntdll unhook via direct syscalls |
+| Defense | `App.exe --secure` | System32-only DLL search, signature policy, ACG |
 
-| Goal               | Implementation                                                         |
-| ------------------ | ---------------------------------------------------------------------- |
-| Victim application | `App.exe` — loads `version.dll`, exports `App_GetStatus()` for hooking |
-| Attack vector 1    | Proxy `version.dll` (Loader) hijacks DLL search order                  |
-| Attack vector 2    | Same proxy spawns `Injector.exe` for remote `LoadLibrary`              |
-| Payload            | `BadDll.dll` — hooks `App_GetStatus` with **Microsoft Detours**        |
-| Phase 3 (EDR)      | `EdrSim.dll` hooks ntdll + integrity watchdog; `BadDll.dll` unhooks via syscalls + disk `.text` overwrite |
-| Defense            | `App.exe --secure` — System32-only DLL search, signature policy, ACG   |
-
-
-**Attack flow (simplified):**
+**Insecure flow (with EDR simulation enabled):**
 
 ```
-App.exe  →  loads local version.dll  →  Loader runs  →  [EdrSim.dll]  →  BadDll.dll  →  ntdll unhook  →  Detour on App_GetStatus
+App.exe → version.dll → EdrSim.dll → BadDll.dll → Detour on App_GetStatus
+                              ↑              ↑
+                         ntdll hooks    unhook + syscalls
+                         + watchdog
 ```
 
-(`EdrSim.dll` loads only when `simulate_edr` is `true` in `Loader.config.json`.)
-
-**Defense flow:**
+**Secure flow:**
 
 ```
-App.exe --secure  →  ignores local version.dll  →  System32 DLL only  →  unsigned DLLs blocked  →  detours blocked
+App.exe --secure → System32 version.dll only → unsigned DLLs blocked → Detours blocked
 ```
+
+Set `"simulate_edr": true` in `Loader.config.json` (or run `demo.ps1 -Mode insecure-unhook`) to enable `EdrSim.dll`.
+
+---
+
+## Attack chain
+
+The stack is built in three phases. Each phase is visible in log files under `deploy/`.
+
+| Phase | Technique | Component | Evidence |
+| ----- | --------- | --------- | -------- |
+| 1 | DLL search-order hijacking | `version.dll` proxy | `version.log` — local path loaded |
+| 2 | In-process or remote injection + Detours | `BadDll.dll` | `bad_dll.log` — detour on `App_GetStatus` |
+| 3 | EDR hooks + integrity watchdog vs. syscall unhook | `EdrSim.dll` + `BadDll.dll` | `edr_sim.log`, `bad_dll.log` — `0xE9` hooks, SSN, `.text` restore |
+
+Phase 3 models a common asymmetry: EDR patches **live ntdll in RAM**; the on-disk DLL stays clean. Unhooking maps the disk copy and overwrites the hooked `.text` section. Direct syscalls bypass usermode stubs when `NtProtectVirtualMemory` is hooked.
 
 ---
 
 ## Project structure
 
 ```
-Cyber/
+Cybersecurity/
 ├── App/                    # Victim executable
-│   └── main.cpp
-├── Loader/                 # Built as version.dll (proxy hijacker)
-│   ├── src/
-│   │   ├── dllmain.cpp
-│   │   ├── loader.cpp
-│   │   ├── config.cpp
-│   │   ├── exports_forward.cpp
-│   │   └── injector_main.cpp   # Injector.exe source
-│   └── res/
-│       └── Loader.config.json
-├── BadDll/                 # Detours payload DLL + ntdll unhook
-│   ├── include/
-│   │   └── unhook.hpp
-│   └── src/
-│       ├── dllmain.cpp
-│       ├── hooks.cpp
-│       └── unhook.cpp
-├── EdrSim/                 # Optional EDR hook simulator
-│   ├── include/
-│   │   └── simulate.hpp
-│   └── src/
-│       ├── dllmain.cpp
-│       └── simulate.cpp
-├── shared/                 # Shared logging library
-│   ├── lab_log.h
-│   └── lab_log.cpp
-├── cmake/
-│   └── BuildDetours.cmake  # Builds Microsoft Detours static lib
-├── third_party/
-│   └── microsoft-detours/  # Cloned on first build
-├── scripts/
-│   ├── build.ps1
-│   └── demo.ps1
-├── deploy/                 # Runtime bundle (after build)
-│   ├── App.exe
-│   ├── version.dll
-│   ├── BadDll.dll
-│   ├── EdrSim.dll
-│   ├── Injector.exe
-│   ├── Loader.config.json
-│   └── *.log
-├── CMakeLists.txt          # Root build + deploy target
-├── BUILD.md                # Short build reference
-└── README.md               # This file
+├── Loader/                 # version.dll + Injector.exe
+├── BadDll/                 # Detours payload + ntdll unhook
+├── EdrSim/                 # EDR hook simulator + watchdog
+├── shared/                 # LabLogger + lab_syscalls
+│   └── syscalls/           # Direct syscall stub (Hell's Gate lite)
+├── cmake/BuildDetours.cmake
+├── scripts/build.ps1, demo.ps1
+└── deploy/                 # Runtime bundle after build
 ```
 
 ---
@@ -107,185 +87,144 @@ Cyber/
 
 ```mermaid
 flowchart TB
-    subgraph victim [Victim process - App.exe]
+    subgraph victim [Victim process App.exe]
         App[App.exe]
-        Ver[version.dll proxy]
+        Ver[version.dll]
+        Sim[EdrSim.dll]
         Bad[BadDll.dll]
         App -->|LoadLibrary| Ver
-        Ver -->|Method 1 or Injector| Bad
+        Ver -->|simulate_edr| Sim
+        Ver --> Bad
+        Sim -->|JMP hooks ntdll| Ntdll[ntdll in RAM]
+        Bad -->|syscall unhook| Ntdll
         Bad -->|DetourAttach| App
     end
 
-    subgraph system [Windows System32]
-        RealVer[version.dll real]
+    subgraph system [System32]
+        RealVer[version.dll]
+        DiskNtdll[ntdll.dll on disk]
     end
 
-    Ver -->|export forwarding| RealVer
-
-    subgraph remote [Method 2 only]
-        Inj[Injector.exe]
-        Ver -->|CreateProcess| Inj
-        Inj -->|CreateRemoteThread LoadLibraryW| Bad
-    end
+    Ver -->|export forward| RealVer
+    Bad -->|SEC_IMAGE read| DiskNtdll
 ```
 
+### Build order
 
-
-### Build dependency order
-
-1. **detours** (static lib from Microsoft Detours sources)
-2. **lab_log** (shared logging)
-3. **BadDll.dll** (links detours + lab_log)
-4. **version.dll** + **Injector.exe** (links lab_log)
-5. **App.exe** (links lab_log)
-6. **deploy** target copies everything into `deploy/`
+1. **detours** (static lib)
+2. **lab_log**, **lab_syscalls**
+3. **BadDll.dll**, **EdrSim.dll**
+4. **version.dll**, **Injector.exe**, **App.exe**
+5. **deploy** target copies artifacts to `deploy/`
 
 ---
 
 ## Components
 
-### 1. App.exe (victim)
+### App.exe (victim)
 
 **Source:** `App/main.cpp`
 
-The application that can run in two modes:
+| Flag | Effect |
+| ---- | ------ |
+| `--secure` | All mitigations enabled (default) |
+| `--insecure` | Local proxy DLLs can load |
+| `--demo` | Short run: 5 status lines, 2s apart |
 
+Exports `App_GetStatus()` — returns `"OK (App.exe)"` normally, `"INJECTED (BadDll.dll)"` when hooked.
 
-| Flag         | Effect                                     |
-| ------------ | ------------------------------------------ |
-| `--secure`   | Enables all mitigations (default)          |
-| `--insecure` | Vulnerable — local proxy DLLs can load     |
-| `--demo`     | Short run: 5 status lines, 2 seconds apart |
-
-
-**Exported function** (hook target for BadDll):
-
-```cpp
-extern "C" __declspec(dllexport) const char* App_GetStatus();
-```
-
-- Normal return: `"OK (App.exe)"`
-- After hook: `"INJECTED (BadDll.dll)"`
-
-**Runtime behavior:**
-
-1. Parse CLI flags and log to `app.log`
-2. If secure: apply mitigations (see [Defense](#defense-secure-mode))
-3. `LoadLibraryA("version.dll")` — triggers hijack when insecure
-4. Wait 1.5s for Loader thread / injection
-5. Print `App_GetStatus()` in a loop (proves hook worked)
+**Runtime:** parse flags → optional mitigations → `LoadLibrary("version.dll")` → wait 1.5s for injection → status loop.
 
 ---
 
-### 2. version.dll (Loader — proxy hijacker)
+### version.dll (Loader)
 
-**CMake target:** `version` (output name `version.dll`, not `Loader.dll`)
+Proxy `version.dll` placed beside `App.exe`. Forwards exports to `C:\Windows\System32\version.dll` via linker pragmas. A worker thread reads `Loader.config.json` and loads `EdrSim.dll` (if enabled) then `BadDll.dll`.
 
-**Sources:**
-
-
-| File                  | Purpose                                                          |
-| --------------------- | ---------------------------------------------------------------- |
-| `dllmain.cpp`         | `DllMain` → `CreateThread` → `loader::init()`                    |
-| `loader.cpp`          | Config, target filter, injection dispatch                        |
-| `config.cpp`          | Minimal JSON parser for `Loader.config.json`                     |
-| `exports_forward.cpp` | Linker pragmas forwarding exports to real System32 `version.dll` |
-
-
-**Why a proxy DLL?**
-
-Windows searches the application directory before System32. Placing a fake `version.dll` next to `App.exe` causes the app to load our DLL first. Our DLL must forward all real `version.dll` exports to `C:\Windows\System32\version.dll` so the app still works.
-
-**Export forwarding** uses `#pragma comment(linker, "/export:...")` (MinGW-compatible). Example:
-
-```cpp
-#pragma comment(linker, "/export:GetFileVersionInfoA=C:/Windows/System32/version.GetFileVersionInfoA")
-```
-
-**Log file:** `version.log`
+**Log:** `version.log`
 
 ---
 
-### 3. BadDll.dll (payload)
+### EdrSim.dll (EDR simulator)
 
-**Source:** `BadDll/src/hooks.cpp`, `BadDll/src/dllmain.cpp`
+**Sources:** `EdrSim/src/simulate.cpp`, `EdrSim/src/watchdog.cpp`
 
-Loaded by the Loader (in-process or via Injector). Uses **Microsoft Detours** to hook `App_GetStatus`:
+Optional module loaded before the payload when `simulate_edr` is true.
 
-1. `GetModuleHandle(L"App.exe")` + `GetProcAddress("App_GetStatus")`
-2. `DetourTransactionBegin` / `DetourAttach` / `DetourTransactionCommit`
-3. Hook function returns `"INJECTED (BadDll.dll)"`
+| Feature | Behavior |
+| ------- | -------- |
+| ntdll hooks | `0xE9` JMP patches on `NtAllocateVirtualMemory` and `NtProtectVirtualMemory` |
+| Deferred install | First hook pass runs after **2.5s** so `LoadLibrary(BadDll)` and Detours attach complete first |
+| Integrity watchdog | Every **1.5s**, checks hook bytes; if tampered, logs and re-applies the JMP |
 
-On `DLL_PROCESS_DETACH`, detours are removed cleanly.
-
-**Log file:** `bad_dll.log`
+**Log:** `edr_sim.log`
 
 ---
 
-### 4. Injector.exe (remote injector)
+### BadDll.dll (payload)
+
+**Sources:** `BadDll/src/hooks.cpp`, `unhook.cpp`, `dllmain.cpp`
+
+On attach:
+
+1. **Detours** — hook `App_GetStatus` via `GetProcAddress` + `DetourAttach`
+2. **Unhook** — map pristine `ntdll.dll` from disk, resolve SSN from clean exports, call `NtProtectVirtualMemory` via **direct syscall**, `memcpy` clean `.text` over live `.text`
+
+Uses `shared/syscalls/` (static `lab_syscalls` lib) for syscall stub generation.
+
+**Log:** `bad_dll.log`
+
+---
+
+### Injector.exe (remote mode)
 
 **Source:** `Loader/src/injector_main.cpp`
 
-Used only when `Loader.config.json` has `"mode": "remote"`.
+`Injector.exe <pid> <dll_path>` — classic `OpenProcess` → `VirtualAllocEx` → `WriteProcessMemory` → `CreateRemoteThread(LoadLibraryW)`.
 
-**Usage:**
+When `simulate_edr` is true, the Loader calls Injector twice: first `EdrSim.dll`, then `BadDll.dll`.
 
-```
-Injector.exe <target_pid> <full_path_to_dll>
-```
-
-**Steps:**
-
-1. `OpenProcess` on target PID
-2. `VirtualAllocEx` — allocate memory in target for DLL path (wide string)
-3. `WriteProcessMemory` — write path into target
-4. `CreateRemoteThread` — start `LoadLibraryW` in target process
-5. Wait for thread; check module handle return value
-
-**Log file:** `injector.log` (only written when Injector runs)
+**Log:** `injector.log`
 
 ---
 
 ## Injection methods
 
-### Method 1 — In-process (`"mode": "inprocess"`)
+### In-process (`"mode": "inprocess"`)
 
-```mermaid
-sequenceDiagram
-    participant App as App.exe
-    participant Ver as version.dll
-    participant Bad as BadDll.dll
-
-    App->>Ver: LoadLibrary version.dll
-    Ver->>Ver: DllMain thread init
-    Ver->>Bad: LoadLibrary BadDll.dll
-    Bad->>Bad: DetourAttach App_GetStatus
-    App->>App: App_GetStatus returns INJECTED
+```
+App.exe → version.dll → [EdrSim.dll] → BadDll.dll → DetourAttach
 ```
 
+### Remote (`"mode": "remote"`)
 
-
-All code runs inside the same process. This is the classic DLL hijack + payload pattern (similar in concept to Koaloader in the reference `example/` tree, but custom and minimal).
-
-### Method 2 — Remote (`"mode": "remote"`)
-
-```mermaid
-sequenceDiagram
-    participant App as App.exe
-    participant Ver as version.dll
-    participant Inj as Injector.exe
-    participant Bad as BadDll.dll
-
-    App->>Ver: LoadLibrary version.dll
-    Ver->>Inj: CreateProcess Injector.exe pid dll_path
-    Inj->>App: CreateRemoteThread LoadLibraryW
-    App->>Bad: BadDll loaded in App process
-    Bad->>Bad: DetourAttach App_GetStatus
+```
+App.exe → version.dll → Injector.exe → LoadLibraryW in target → BadDll.dll
 ```
 
+---
 
+## EDR simulation & unhooking
 
-The proxy DLL does not call `LoadLibrary` on the payload itself; it spawns `Injector.exe` to inject from outside using the standard remote-thread technique (similar in concept to Koalinjector in `example/`).
+### What EdrSim models
+
+User-mode EDR often patches ntdll syscall stubs in process memory (typically a 5-byte `0xE9` relative JMP). The file on disk is unchanged. EdrSim reproduces that behavior and adds an **integrity watchdog** that re-applies hooks if the stubs are restored.
+
+### What BadDll counters with
+
+1. **Reflective DLL overwriting** — `CreateFileMapping` + `SEC_IMAGE` on `ntdll.dll`, locate `.text`, overwrite live RAM from disk
+2. **Direct syscalls** — extract syscall number (SSN) from the disk-mapped export (`mov r10, rcx; mov eax, SSN`), invoke `NtProtectVirtualMemory` without calling the hooked stub
+3. **One-shot unhook** at payload load; the watchdog may re-hook on later ticks (observable arms race in logs)
+
+### Expected log evidence (`insecure-unhook`)
+
+| File | Look for |
+| ---- | -------- |
+| `bad_dll.log` | `SSN=0xXX`, `via direct syscall`, stub verification OK |
+| `edr_sim.log` | `Hooked NtAllocateVirtualMemory`, `Integrity watchdog: tamper detected`, `Hook restored` |
+| `app.log` | `[status] INJECTED (BadDll.dll)` |
+
+Unhooking does **not** bypass `--secure` mitigations (ACG, Microsoft-signed-only policy).
 
 ---
 
@@ -293,59 +232,33 @@ The proxy DLL does not call `LoadLibrary` on the payload itself; it spawns `Inje
 
 Run: `App.exe --secure`
 
-Three Windows process mitigations are applied **before** `LoadLibrary("version.dll")`:
+Three mitigations apply **before** `LoadLibrary("version.dll")`:
 
+| Mitigation | API | Blocks |
+| ---------- | --- | ------ |
+| DLL search order | `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` | Local proxy `version.dll` |
+| Signature policy | `ProcessSignaturePolicy` / `MicrosoftSignedOnly` | Unsigned `BadDll.dll`, `EdrSim.dll` |
+| Arbitrary Code Guard | `ProcessDynamicCodePolicy` / `ProhibitDynamicCode` | Detours code patching |
 
-| Mitigation                     | API                                                                               | What it blocks                                                                                              |
-| ------------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **DLL search order**           | `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`                          | Local proxy `version.dll` in `deploy/` is ignored; only System32 is searched                                |
-| **Signature policy**           | `SetProcessMitigationPolicy(ProcessSignaturePolicy)` with `MicrosoftSignedOnly`   | Unsigned `BadDll.dll` cannot load even if injection is attempted                                            |
-| **Arbitrary Code Guard (ACG)** | `SetProcessMitigationPolicy(ProcessDynamicCodePolicy)` with `ProhibitDynamicCode` | Cannot modify executable code pages — **Microsoft Detours** fails because it needs `VirtualProtect` on code |
-
-
-**Expected secure behavior:**
-
-- `version.dll` path contains `SYSTEM32`
-- Status lines show `OK (App.exe)` — never `INJECTED`
-- `bad_dll.log` may be missing or show failed attach
-
----
-
-## Microsoft Detours payload
-
-Detours is built from source in `third_party/microsoft-detours` via `cmake/BuildDetours.cmake` as a static library linked into `BadDll.dll`.
-
-**Hook installation (conceptual):**
-
-```cpp
-DetourTransactionBegin();
-DetourUpdateThread(GetCurrentThread());
-DetourAttach(&(PVOID&)g_real_app_get_status, Hook_App_GetStatus);
-DetourTransactionCommit();
-```
-
-**Why Detours?** The course requires demonstrating inline detours / trampolines. ACG in secure mode specifically targets this class of attack (writable-then-executable code patches).
-
-**Toolchain note:** Detours officially targets MSVC (`nmake`). This project compiles Detours with **MinGW g++** via CMake. If linking fails, see [BUILD.md](BUILD.md) for an MSVC fallback.
+**Expected:** System32 `version.dll`, status `OK (App.exe)`, no successful detour.
 
 ---
 
 ## Logging
 
-Every component writes to its own log file in the **same directory as the executable** (typically `deploy/`), with timestamps. Messages are also mirrored to the console when launched from a terminal.
+Per-component logs in `deploy/` with timestamps; mirrored to console when run from a terminal.
 
+| Component | Log file | Notable entries |
+| --------- | -------- | ----------------- |
+| App.exe | `app.log` | Mode, DLL path, status loop |
+| version.dll | `version.log` | Config, injection mode, `simulate_edr` |
+| EdrSim.dll | `edr_sim.log` | Hook install, watchdog tamper/restore |
+| BadDll.dll | `bad_dll.log` | Detour, SSN, unhook, stub bytes |
+| Injector.exe | `injector.log` | Remote injection steps |
 
-| Component    | Log file       | Example entries                                   |
-| ------------ | -------------- | ------------------------------------------------- |
-| App.exe      | `app.log`      | Mode, mitigations, version.dll path, status loop  |
-| version.dll  | `version.log`  | Config path, injection mode, LoadLibrary result   |
-| BadDll.dll   | `bad_dll.log`  | Detour address, attach/detach result              |
-| Injector.exe | `injector.log` | OpenProcess, VirtualAllocEx, remote thread result |
+Implementation: `shared/lab_log.cpp` — `LabLogger::init("name.log")`.
 
-
-**Shared implementation:** `shared/lab_log.cpp` — `LabLogger::init("name.log")` resolves the log path next to the host EXE or DLL module.
-
-After `demo.ps1` finishes, all existing log files are printed to the terminal automatically.
+`demo.ps1` prints all log files after each run.
 
 ---
 
@@ -365,136 +278,92 @@ After `demo.ps1` finishes, all existing log files are printed to the terminal au
 }
 ```
 
-
-| Field          | Description                                              |
-| -------------- | -------------------------------------------------------- |
-| `enabled`      | If `false`, Loader does nothing                          |
-| `simulate_edr` | If `true`, load `EdrSim.dll` before payload (Phase 3 demo) |
-| `edr_sim`      | EDR simulator DLL path relative to `version.dll`         |
-| `targets`      | Host EXE names to inject into (empty = all processes)    |
-| `mode`         | `"inprocess"` or `"remote"`                              |
-| `payload`      | DLL filename or path relative to `version.dll` directory |
-| `injector`     | EXE used for remote mode                                 |
-
-
-`demo.ps1` updates `mode` automatically per demo scenario.
+| Field | Description |
+| ----- | ----------- |
+| `enabled` | If `false`, Loader does nothing |
+| `simulate_edr` | Load `EdrSim.dll` before payload |
+| `edr_sim` | Path to EDR simulator DLL (relative to `version.dll`) |
+| `targets` | Host EXE names to inject into |
+| `mode` | `inprocess` or `remote` |
+| `payload` | Payload DLL path |
+| `injector` | Injector EXE for remote mode |
 
 ---
 
 ## Build and run
 
-See [BUILD.md](BUILD.md) for prerequisites and troubleshooting.
+See [BUILD.md](BUILD.md) for prerequisites.
 
 ```powershell
-# From Cyber/ repository root
 .\scripts\build.ps1
 
-# Demos (run from anywhere; script uses deploy/)
 .\scripts\demo.ps1 -Mode insecure-inprocess
 .\scripts\demo.ps1 -Mode insecure-remote
+.\scripts\demo.ps1 -Mode insecure-unhook
 .\scripts\demo.ps1 -Mode secure
 ```
 
 **Manual run** (from `deploy/`):
 
 ```powershell
-cd deploy
 .\App.exe --insecure --demo
 ```
 
-Ensure these files sit **next to** `App.exe`:
-
-- `version.dll`
-- `BadDll.dll`
-- `Injector.exe` (remote mode only)
-- `Loader.config.json`
+Files beside `App.exe`: `version.dll`, `BadDll.dll`, `EdrSim.dll` (if using EDR sim), `Injector.exe` (remote), `Loader.config.json`.
 
 ---
 
-## Demo matrix
+## Scenarios
 
-
-| Command                             | Loader mode | Expected `version.dll` path       | Expected status         |
-| ----------------------------------- | ----------- | --------------------------------- | ----------------------- |
-| `demo.ps1 -Mode insecure-inprocess` | inprocess   | `deploy\version.dll`              | `INJECTED (BadDll.dll)` |
-| `demo.ps1 -Mode insecure-remote`    | remote      | `deploy\version.dll`              | `INJECTED (BadDll.dll)` |
-| `demo.ps1 -Mode insecure-unhook`    | inprocess   | `deploy\version.dll`              | `INJECTED` + syscall unhook + watchdog re-hook logs |
-| `demo.ps1 -Mode secure`             | inprocess   | `C:\Windows\System32\version.dll` | `OK (App.exe)`          |
-
+| Command | Mode | `version.dll` path | Expected status |
+| ------- | ---- | ------------------ | --------------- |
+| `demo.ps1 -Mode insecure-inprocess` | inprocess | `deploy\version.dll` | `INJECTED (BadDll.dll)` |
+| `demo.ps1 -Mode insecure-remote` | remote | `deploy\version.dll` | `INJECTED (BadDll.dll)` |
+| `demo.ps1 -Mode insecure-unhook` | inprocess + EDR | `deploy\version.dll` | `INJECTED` + EDR/unhook logs |
+| `demo.ps1 -Mode secure` | inprocess | `System32\version.dll` | `OK (App.exe)` |
 
 ---
 
-## Implementation details
+## Implementation notes
 
-### DLL hijacking (Phase 1)
+### Detours
 
-Windows DLL search order for desktop apps traditionally checks the application directory before System32. An attacker drops a malicious DLL with the same name as a dependency (`version.dll`). When the victim calls `LoadLibrary("version.dll")`, the malicious copy loads first.
+Built from `third_party/microsoft-detours` via `cmake/BuildDetours.cmake`. Hook pattern:
 
-**Defense:** `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` restricts loading so only System32 (and explicitly added directories) are used.
+```cpp
+DetourTransactionBegin();
+DetourUpdateThread(GetCurrentThread());
+DetourAttach(&(PVOID&)g_real_app_get_status, Hook_App_GetStatus);
+DetourTransactionCommit();
+```
 
-### Code injection / detours (Phase 2)
-
-After the payload DLL loads, it patches `App_GetStatus` in memory. Detours saves the original bytes, writes a trampoline, and redirects execution to the hook.
-
-**Defense:** ACG (`ProhibitDynamicCode`) prevents marking code pages writable and executable, which breaks Detours and similar hook frameworks.
-
-### EDR unhooking (Phase 3)
-
-EDR products often hook ntdll syscall stubs in process memory (e.g. a `0xE9` JMP redirect). They typically do not modify the on-disk DLL.
-
-**EdrSim.dll** (optional) simulates a stronger EDR:
-
-- Defers JMP hooks until the **first watchdog tick** (2.5s) so `LoadLibrary(BadDll.dll)` and Detours attach are not broken
-- Then hooks `NtAllocateVirtualMemory` and `NtProtectVirtualMemory`
-- Runs an **integrity watchdog** every **1.5s** thereafter that detects tampered hook bytes and re-applies the JMP patch
-
-**BadDll.dll** counters with:
-
-1. Installs Detours on `App_GetStatus` first (while ntdll is still clean)
-2. Opens pristine `ntdll.dll` from disk via `CreateFileMapping` + `SEC_IMAGE`
-3. Resolves **syscall numbers (SSN)** from the disk copy (Hell's Gate lite)
-4. Calls **`NtProtectVirtualMemory` via direct syscall** (bypasses usermode hooks once installed)
-5. `memcpy` clean `.text` over hooked live `.text`
-6. Logs stub bytes before/after for verification
-
-Run with `demo.ps1 -Mode insecure-unhook` or set `"simulate_edr": true` in config.
-
-**Arms race (expected logs):**
-
-- `bad_dll.log`: `SSN=0xXX`, `via direct syscall`, stub verification OK
-- `edr_sim.log`: at ~2.5s, `Hooked NtAllocateVirtualMemory` / `NtProtectVirtualMemory`; later ticks log `Integrity watchdog: tamper detected` if stubs are restored again
-- `app.log`: `INJECTED (BadDll.dll)` throughout the status loop
-
-**Note:** EDR hooks are deferred 2.5s so the payload can load; unhook runs immediately after Detours attach. The watchdog re-hooks on subsequent ticks if `.text` is tampered again. This does not bypass ACG or Microsoft-signed-only policy in `--secure` mode.
+ACG in secure mode blocks the writable-then-executable page flips Detours requires. Toolchain: MinGW primary; see [BUILD.md](BUILD.md) for MSVC fallback.
 
 ### Why `App_GetStatus` is exported
 
-Detours needs a stable function pointer in the victim. Exporting a function from `App.exe` gives BadDll a reliable symbol to resolve with `GetProcAddress`, without guessing addresses or scanning memory.
+Detours needs a stable symbol in the victim. `GetProcAddress` on an exported function avoids guessing addresses.
 
-### Threading in Loader
+### Loader threading
 
-`DllMain` must not block or call complex APIs. Loader spawns a worker thread (`CreateThread`) that runs `loader::init()` — config load, target check, and injection.
+`DllMain` spawns a worker thread for `loader::init()` — config, target check, and injection must not block the loader lock.
 
-### JSON config without external libraries
+### JSON config
 
-`config.cpp` uses a small hand-written parser (string search for keys) to avoid pulling in nlohmann/json or similar. Sufficient for the fixed config schema.
+`config.cpp` uses a minimal hand-written parser (no external JSON library).
 
 ---
 
-## Quick reference — key source files
+## Key source files
 
-
-| File                                                         | Role                             |
-| ------------------------------------------------------------ | -------------------------------- |
-| [App/main.cpp](App/main.cpp)                                 | Victim, mitigations, status loop |
-| [Loader/src/loader.cpp](Loader/src/loader.cpp)               | Injection logic                  |
-| [Loader/src/injector_main.cpp](Loader/src/injector_main.cpp) | Remote injector                  |
-| [BadDll/src/hooks.cpp](BadDll/src/hooks.cpp)                 | Detours hook                     |
-| [BadDll/src/unhook.cpp](BadDll/src/unhook.cpp)               | ntdll reflective unhook + syscalls |
-| [shared/syscalls/syscall.cpp](shared/syscalls/syscall.cpp)   | Direct syscall stub generation   |
-| [EdrSim/src/simulate.cpp](EdrSim/src/simulate.cpp)             | EDR hook simulator               |
-| [EdrSim/src/watchdog.cpp](EdrSim/src/watchdog.cpp)             | Integrity watchdog thread        |
-| [shared/lab_log.cpp](shared/lab_log.cpp)                     | File + console logging           |
-| [cmake/BuildDetours.cmake](cmake/BuildDetours.cmake)         | Detours static library           |
-
-
+| File | Role |
+| ---- | ---- |
+| [App/main.cpp](App/main.cpp) | Victim, mitigations, status loop |
+| [Loader/src/loader.cpp](Loader/src/loader.cpp) | Injection + EdrSim dispatch |
+| [Loader/src/injector_main.cpp](Loader/src/injector_main.cpp) | Remote injector |
+| [EdrSim/src/simulate.cpp](EdrSim/src/simulate.cpp) | ntdll JMP hooks |
+| [EdrSim/src/watchdog.cpp](EdrSim/src/watchdog.cpp) | Integrity watchdog thread |
+| [BadDll/src/hooks.cpp](BadDll/src/hooks.cpp) | Detours hook |
+| [BadDll/src/unhook.cpp](BadDll/src/unhook.cpp) | Reflective unhook + syscalls |
+| [shared/syscalls/syscall.cpp](shared/syscalls/syscall.cpp) | SSN extraction, syscall stub |
+| [shared/lab_log.cpp](shared/lab_log.cpp) | File + console logging |
+| [cmake/BuildDetours.cmake](cmake/BuildDetours.cmake) | Detours static library |
