@@ -23,6 +23,7 @@ add_subdirectory(App)
 
 # Deploy bundle next to build tree
 set(DEPLOY_DIR "${CMAKE_SOURCE_DIR}/deploy")
+get_filename_component(MINGW_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
 
 add_custom_target(deploy ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${DEPLOY_DIR}"
@@ -32,6 +33,9 @@ add_custom_target(deploy ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:EdrSim>" "${DEPLOY_DIR}/"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:Injector>" "${DEPLOY_DIR}/"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/Loader/res/Loader.config.json" "${DEPLOY_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MINGW_BIN_DIR}/libgcc_s_seh-1.dll" "${DEPLOY_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MINGW_BIN_DIR}/libstdc++-6.dll" "${DEPLOY_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MINGW_BIN_DIR}/libwinpthread-1.dll" "${DEPLOY_DIR}/"
     DEPENDS App version BadDll EdrSim Injector
     COMMENT "Copying lab binaries to deploy/"
 )

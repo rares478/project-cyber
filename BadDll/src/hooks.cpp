@@ -61,9 +61,21 @@ void remove_hooks(LabLogger& log) {
     log.log("[BadDll] Removing detour...");
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
-    DetourDetach(
+    const LONG detach_result = DetourDetach(
         reinterpret_cast<PVOID*>(&g_real_app_get_status),
         reinterpret_cast<PVOID>(hooked_app_get_status));
-    DetourTransactionCommit();
+    if (detach_result != NO_ERROR) {
+        DetourTransactionAbort();
+        log.logf("[BadDll] DetourDetach failed (error %ld).", detach_result);
+        return;
+    }
+
+    const LONG commit_result = DetourTransactionCommit();
+    if (commit_result != NO_ERROR) {
+        log.logf("[BadDll] DetourTransactionCommit failed on detach (error %ld).", commit_result);
+        return;
+    }
+
+    g_real_app_get_status = nullptr;
     log.log("[BadDll] Detour removed.");
 }

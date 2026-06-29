@@ -8,6 +8,7 @@ add_compile_definitions(_WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX)
 
 add_library(EdrSim SHARED
     src/dllmain.cpp
+    src/edr_api.cpp
     src/simulate.cpp
     src/watchdog.cpp
 )

@@ -15,7 +15,7 @@ Detours source is vendored under `third_party/microsoft-detours` (clone via `scr
 .\scripts\build.ps1
 ```
 
-Output: `deploy/` contains `App.exe`, `version.dll`, `BadDll.dll`, `Injector.exe`, `Loader.config.json`.
+Output: `deploy/` contains `App.exe`, `version.dll`, `BadDll.dll`, `EdrSim.dll`, `Injector.exe`, `Loader.config.json`, and MinGW runtime DLLs (`libgcc_s_seh-1.dll`, `libstdc++-6.dll`, `libwinpthread-1.dll`) so demos work without MinGW on `PATH`.
 
 ## Demos
 

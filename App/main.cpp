@@ -112,6 +112,13 @@ int main(int argc, char* argv[]) {
     }
 
     if (hVersion) {
+        using ShutdownFn = void (WINAPI*)();
+        const auto shutdown =
+            reinterpret_cast<ShutdownFn>(GetProcAddress(hVersion, "Lab_ShutdownInjectedModules"));
+        if (shutdown) {
+            g_log.log("[*] Lab_ShutdownInjectedModules (unload payload before ntdll hooks)");
+            shutdown();
+        }
         g_log.log("[*] FreeLibrary(version.dll)");
         FreeLibrary(hVersion);
     }

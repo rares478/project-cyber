@@ -1,14 +1,23 @@
 # Quick demo helper — all logs print to this console automatically.
 param(
-    [ValidateSet("insecure-inprocess", "insecure-remote", "insecure-unhook", "secure")]
+    [ValidateSet("insecure", "insecure-inprocess", "insecure-remote", "insecure-unhook", "secure")]
     [string]$Mode = "insecure-inprocess"
 )
 
 $ErrorActionPreference = "Stop"
 
+if ($Mode -eq "insecure") {
+    $Mode = "insecure-inprocess"
+}
+
 $deploy = Join-Path (Split-Path -Parent $PSScriptRoot) "deploy"
 if (-not (Test-Path (Join-Path $deploy "App.exe"))) {
     Write-Error "Run scripts/build.ps1 first."
+}
+
+foreach ($log in @("app.log", "version.log", "edr_sim.log", "bad_dll.log", "injector.log")) {
+    $p = Join-Path $deploy $log
+    if (Test-Path $p) { Remove-Item $p -Force }
 }
 
 $configPath = Join-Path $deploy "Loader.config.json"
@@ -49,6 +58,7 @@ Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " DLL injection lab demo: $Mode" -ForegroundColor Cyan
 Write-Host " Loader.config mode: $($config.mode)" -ForegroundColor Cyan
+Write-Host " simulate_edr: $($config.simulate_edr)" -ForegroundColor Cyan
 Write-Host " Expected status line: $expected" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""

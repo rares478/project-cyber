@@ -18,5 +18,6 @@ struct Config {
 
 bool load_config(const std::wstring& config_path, Config& out);
 void init(HMODULE self_module);
+void shutdown_injected_modules();
 
 }  // namespace loader

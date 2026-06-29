@@ -317,6 +317,7 @@ Files beside `App.exe`: `version.dll`, `BadDll.dll`, `EdrSim.dll` (if using EDR 
 
 | Command | Mode | `version.dll` path | Expected status |
 | ------- | ---- | ------------------ | --------------- |
+| `demo.ps1 -Mode insecure` (alias) | inprocess | `deploy\version.dll` | `INJECTED (BadDll.dll)` |
 | `demo.ps1 -Mode insecure-inprocess` | inprocess | `deploy\version.dll` | `INJECTED (BadDll.dll)` |
 | `demo.ps1 -Mode insecure-remote` | remote | `deploy\version.dll` | `INJECTED (BadDll.dll)` |
 | `demo.ps1 -Mode insecure-unhook` | inprocess + EDR | `deploy\version.dll` | `INJECTED` + EDR/unhook logs |

@@ -14,10 +14,11 @@ struct HookSite {
     BYTE* target = nullptr;
     BYTE expected_patch[5]{};
     bool active = false;
+    bool install_immediately = false;
 };
 
 static std::vector<HookSite> g_hooks;
-static bool g_initial_hooks_installed = false;
+static bool g_deferred_hooks_installed = false;
 
 static LONG NTAPI dummy_nt_stub() {
     return 0;  // STATUS_SUCCESS
@@ -73,37 +74,55 @@ static bool hooks_tampered(const HookSite& site) {
     return std::memcmp(site.target, site.expected_patch, sizeof(site.expected_patch)) != 0;
 }
 
-static void install_initial_hooks(LabLogger& log) {
-    if (g_initial_hooks_installed) {
+static void install_deferred_hooks(LabLogger& log) {
+    if (g_deferred_hooks_installed) {
         return;
     }
 
     int hooked = 0;
     for (auto& site : g_hooks) {
-        if (apply_jmp_patch(log, site, "Hooked")) {
-            ++hooked;
+        if (!site.install_immediately && !site.active) {
+            if (apply_jmp_patch(log, site, "Hooked (deferred)")) {
+                ++hooked;
+            }
         }
     }
-    g_initial_hooks_installed = true;
-    log.logf("[EdrSim] Installed %d ntdll JMP hook(s) (0xE9).", hooked);
+    g_deferred_hooks_installed = true;
+    if (hooked > 0) {
+        log.logf("[EdrSim] Installed %d deferred ntdll JMP hook(s).", hooked);
+    }
 }
 
 }  // namespace
 
 bool install_edr_hooks(LabLogger& log) {
-    log.log("[EdrSim] Preparing EDR hook targets (deferred until watchdog first tick)...");
+    log.log("[EdrSim] Preparing EDR hook targets...");
 
     g_hooks.clear();
-    g_initial_hooks_installed = false;
-    g_hooks.push_back({ "NtAllocateVirtualMemory", nullptr, {}, false });
-    g_hooks.push_back({ "NtProtectVirtualMemory", nullptr, {}, false });
+    g_deferred_hooks_installed = false;
+    g_hooks.push_back({ "NtAllocateVirtualMemory", nullptr, {}, false, true });
+    g_hooks.push_back({ "NtProtectVirtualMemory", nullptr, {}, false, false });
 
-    log.log("[EdrSim] Hook install deferred — allows payload LoadLibrary to complete first.");
+    log.log("[EdrSim] NtAllocate hook on payload request; NtProtect deferred to watchdog.");
     return true;
 }
 
+void install_immediate_hooks(LabLogger& log) {
+    int hooked = 0;
+    for (auto& site : g_hooks) {
+        if (site.install_immediately && !site.active) {
+            if (apply_jmp_patch(log, site, "Hooked")) {
+                ++hooked;
+            }
+        }
+    }
+    if (hooked > 0) {
+        log.logf("[EdrSim] Installed %d immediate ntdll JMP hook(s) (0xE9).", hooked);
+    }
+}
+
 void check_and_restore_hooks(LabLogger& log) {
-    install_initial_hooks(log);
+    install_deferred_hooks(log);
 
     for (auto& site : g_hooks) {
         if (!site.active || !site.target) {
@@ -121,6 +140,6 @@ void remove_edr_hooks(LabLogger& log) {
         site.active = false;
     }
     g_hooks.clear();
-    g_initial_hooks_installed = false;
+    g_deferred_hooks_installed = false;
     log.log("[EdrSim] EDR hooks cleared.");
 }

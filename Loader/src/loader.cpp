@@ -209,4 +209,30 @@ void init(HMODULE self_module) {
     }
 }
 
+void shutdown_injected_modules() {
+    HMODULE edr = GetModuleHandleW(L"EdrSim.dll");
+    if (edr) {
+        using StopFn = void (WINAPI*)();
+        if (const auto stop = reinterpret_cast<StopFn>(GetProcAddress(edr, "EdrSim_StopWatchdog"))) {
+            stop();
+        }
+        g_log.log("[version.dll] Stopped EdrSim watchdog before unload.");
+    }
+
+    HMODULE payload = GetModuleHandleW(L"BadDll.dll");
+    if (payload) {
+        using PrepFn = void (WINAPI*)();
+        if (const auto prep = reinterpret_cast<PrepFn>(GetProcAddress(payload, "BadDll_PrepareUnload"))) {
+            prep();
+        }
+        g_log.log("[version.dll] Unloading BadDll.dll before version detach.");
+        FreeLibrary(payload);
+    }
+
+    if (edr) {
+        g_log.log("[version.dll] Unloading EdrSim.dll before version detach.");
+        FreeLibrary(edr);
+    }
+}
+
 }  // namespace loader

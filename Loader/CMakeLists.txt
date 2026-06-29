@@ -11,6 +11,7 @@ set(LOADER_SOURCES
     src/loader.cpp
     src/config.cpp
     src/exports_forward.cpp
+    src/exports_lab.cpp
 )
 
 add_library(version SHARED ${LOADER_SOURCES})
